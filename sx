@@ -1,0 +1,602 @@
+#!/usr/bin/env bash
+
+set -euo pipefail
+
+((BASH_VERSINFO[0] < 4)) && {
+  echo "Error: sx requires Bash 4+. You have Bash $BASH_VERSION." >&2
+  exit 1
+}
+
+# ── Configuration ────────────────────────────────────────────────
+
+SEARCH_PATH="${PWD}"
+INITIAL_QUERY=""
+INITIAL_MODE="fd"
+HAS_RGA=0
+SX_OPEN_CMD=""
+HAS_CLIPBOARD=0
+
+SX_THREADS=$(($(nproc 2> /dev/null || echo 4) - 1))
+[[ $SX_THREADS -lt 1 ]] && SX_THREADS=1
+
+SX_MIN_QUERY=3
+
+# Directories to always exclude from search
+SX_EXCLUDES="\
+.git .hg .svn \
+node_modules vendor Pods .pnpm-store bower_components \
+target build dist out .nuxt .next .output \
+__pycache__ .venv venv env .tox .mypy_cache .pytest_cache .eggs .conda .pixi \
+.zvm .pyenv .nvm .sdkman .rbenv .cargo .rustup .luarocks \
+.npm .yarn .cache .gradle .maven .ivy2 .nuget .pub-cache .dart_tool .fvm \
+.idea .vscode .vs .fleet \
+.DS_Store"
+
+SX_TEXT_EXTS="py pyw rs go js ts jsx tsx java c h cpp hpp cs rb php pl pm swift kt kts \
+scala clj cljs hs ml mli ex exs erl dart lua r tcl m \
+sh bash zsh fish ps1 bat cmd \
+conf cfg ini toml yaml yml json jsonc envrc \
+md mdx rst txt adoc org tex \
+css scss sass less html htm svg vue svelte astro \
+csv tsv xml sql graphql proto lock \
+dockerfile makefile cmake gemfile rakefile cargo \
+gitignore gitattributes editorconfig license readme"
+
+# ── Help ─────────────────────────────────────────────────────────
+
+show_help() {
+  cat << 'EOF'
+sx - Universal Search Tool
+
+Usage: sx [options] [path]
+
+Options:
+  -q, --query QUERY    Start with initial search query
+  -m, --mode MODE      Start in mode: file (default), rg, rga
+  -h, --help           Show this help
+
+Modes (toggle with CTRL-T):
+  [fd]  File search    — fuzzy filter over fd results
+  [rg]  Content search — ripgrep on every keystroke
+  [rga] Universal      — ripgrep-all (PDFs, docx, archives, etc.)
+
+Key Bindings:
+  CTRL-T     Cycle mode: fd → rg → rga → fd
+  CTRL-H     Toggle hidden files
+  CTRL-I     Cycle case: smart → sensitive → insensitive
+  CTRL-G     Toggle .gitignore respect
+  Enter      Smart open (text → $EDITOR, other → system open)
+  ALT-Enter  Force system open
+  CTRL-Y     Copy file path to clipboard
+  CTRL-/     Toggle preview window
+EOF
+}
+
+# ── Dependency Checking ──────────────────────────────────────────
+
+check_deps() {
+  local missing=()
+  for cmd in fd rg fzf bat; do
+    command -v "$cmd" > /dev/null 2>&1 || missing+=("$cmd")
+  done
+  if [[ ${#missing[@]} -gt 0 ]]; then
+    echo "Error: missing required commands: ${missing[*]}"
+    echo "Please install them before running sx."
+    exit 1
+  fi
+
+  command -v rga > /dev/null 2>&1 && HAS_RGA=1
+  if command -v xdg-open > /dev/null 2>&1; then
+    SX_OPEN_CMD="xdg-open"
+  elif command -v open > /dev/null 2>&1; then
+    SX_OPEN_CMD="open"
+  elif command -v wslview > /dev/null 2>&1; then
+    SX_OPEN_CMD="wslview"
+  fi
+
+  if command -v wl-copy > /dev/null 2>&1; then
+    HAS_CLIPBOARD=1
+  elif command -v xclip > /dev/null 2>&1; then
+    HAS_CLIPBOARD=1
+  elif command -v pbcopy > /dev/null 2>&1; then
+    HAS_CLIPBOARD=1
+  fi
+
+  if [[ "$HAS_CLIPBOARD" -eq 0 ]]; then
+    echo "Warning: no clipboard tool found (wl-copy/xclip/pbcopy). CTRL-Y will not work." >&2
+  fi
+
+  # fzf version check (transform: requires >= 0.36)
+  local fzf_version
+  read -r fzf_version _ <<< "$(fzf --version 2> /dev/null || echo "0.0")"
+  local fzf_major fzf_minor
+  IFS='.' read -r fzf_major fzf_minor _ <<< "$fzf_version"
+  if ((fzf_major == 0 && fzf_minor < 36)); then
+    echo "Error: sx requires fzf >= 0.36. You have $(fzf --version 2> /dev/null | head -1)." >&2
+    exit 1
+  fi
+
+  if [[ -z "$SX_OPEN_CMD" ]]; then
+    echo "Warning: no open command found (xdg-open/open/wslview). Opening non-text files will not work." >&2
+  fi
+}
+
+# ── Argument Parsing ─────────────────────────────────────────────
+
+parse_args() {
+  while [[ $# -gt 0 ]]; do
+    case "$1" in
+      -q | --query)
+        if [[ $# -lt 2 ]]; then
+          echo "Error: --query requires a value" >&2
+          exit 1
+        fi
+        INITIAL_QUERY="$2"
+        shift 2
+        ;;
+      -m | --mode)
+        if [[ $# -lt 2 ]]; then
+          echo "Error: --mode requires a value" >&2
+          exit 1
+        fi
+        case "$2" in
+          file | fd) INITIAL_MODE="fd" ;;
+          rg) INITIAL_MODE="rg" ;;
+          rga) INITIAL_MODE="rga" ;;
+          *)
+            echo "Error: unknown mode '$2'. Use: file, rg, rga"
+            exit 1
+            ;;
+        esac
+        shift 2
+        ;;
+      -h | --help)
+        show_help
+        exit 0
+        ;;
+      -*)
+        echo "Error: unknown option '$1'"
+        show_help
+        exit 1
+        ;;
+      *)
+        if [[ -d "$1" ]]; then
+          if [[ "$SEARCH_PATH" != "${PWD}" ]]; then
+            echo "Error: only one search path is allowed (already have '$SEARCH_PATH')" >&2
+            exit 1
+          fi
+          SEARCH_PATH="$1"
+        else
+          echo "Error: '$1' is not a directory" >&2
+          exit 1
+        fi
+        shift
+        ;;
+    esac
+  done
+}
+
+# ── State Setup ──────────────────────────────────────────────────
+
+setup_state() {
+  SX_STATE_DIR=$(mktemp -d)
+  trap 'rm -rf "$SX_STATE_DIR"' EXIT
+
+  echo "off" > "$SX_STATE_DIR/hidden"
+  echo "smart" > "$SX_STATE_DIR/case"
+  echo "on" > "$SX_STATE_DIR/gitignore"
+  echo "$INITIAL_MODE" > "$SX_STATE_DIR/mode"
+
+  export SX_STATE_DIR
+}
+
+# ── Text File Detection ─────────────────────────────────────────
+
+is_text_file() {
+  local f="$1"
+  local ext="${f##*.}"
+  ext="${ext,,}"
+
+  local base
+  base="${f##*/}"
+  base="${base,,}"
+
+  if [[ " $SX_TEXT_EXTS " == *" $ext "* ]] || [[ " $SX_TEXT_EXTS " == *" $base "* ]]; then
+    return 0
+  fi
+
+  case "$base" in
+    makefile | dockerfile | gemfile | rakefile | vagrantfile | jenkinsfile | brewfile | \
+      license | readme | authors | changelog | copying | install | news | todo | \
+      .gitignore | .gitattributes | .editorconfig | .envrc | .bashrc | .zshrc | .profile | .bash_profile)
+      return 0
+      ;;
+  esac
+
+  local mime
+  mime=$(file --mime-type -b "$f" 2> /dev/null || echo "")
+  [[ "$mime" == text/* ]]
+}
+
+# ── Smart Open Dispatcher ───────────────────────────────────────
+
+sx_open() {
+  local file="$1"
+  local line="${2:-}"
+  local force_xdg="${3:-}"
+
+  if [[ -n "$force_xdg" ]]; then
+    nohup "$SX_OPEN_CMD" "$file" > /dev/null 2>&1 &
+    disown
+    return 0
+  fi
+
+  if is_text_file "$file"; then
+    local editor_cmd
+    editor_cmd="$(command -v "${EDITOR:-vim}" 2> /dev/null || echo vim)"
+    local editor_name
+    editor_name="${editor_cmd##*/}"
+
+    if [[ "$editor_name" =~ code|cursor|windsurf ]]; then
+      if [[ -n "$line" ]]; then
+        exec "$editor_cmd" --goto "${file}:${line}"
+      else
+        exec "$editor_cmd" "$file"
+      fi
+    else
+      if [[ -n "$line" ]]; then
+        exec "$editor_cmd" "+${line}" "$file"
+      else
+        exec "$editor_cmd" "$file"
+      fi
+    fi
+  else
+    nohup "$SX_OPEN_CMD" "$file" > /dev/null 2>&1 &
+    disown
+  fi
+}
+
+# ── Clipboard & Force-Open Helpers ────────────────────────────────
+
+sx_clip() {
+  local filepath="$1"
+  if command -v wl-copy > /dev/null 2>&1; then
+    printf '%s' "$filepath" | wl-copy
+  elif command -v xclip > /dev/null 2>&1; then
+    printf '%s' "$filepath" | xclip -selection clipboard
+  elif command -v pbcopy > /dev/null 2>&1; then
+    printf '%s' "$filepath" | pbcopy
+  fi
+}
+
+sx_force_open() {
+  local filepath="$1"
+  nohup "$SX_OPEN_CMD" "$filepath" > /dev/null 2>&1 &
+  disown
+}
+
+# ── Preview Dispatcher ──────────────────────────────────────────
+
+sx_preview() {
+  local entry="$1"
+  local query="${2:-}"
+  local mode
+  read -r mode < "$SX_STATE_DIR/mode" 2> /dev/null || mode="fd"
+
+  if [[ "$mode" == "fd" ]]; then
+    # File mode: show the full file (up to 300 lines)
+    bat --color=always --style=full --line-range :300 "$entry" 2> /dev/null \
+      || echo "Preview not available"
+  else
+    # Content mode: show file content centered on the matched line
+    local file line
+    IFS=':' read -r file line _ <<< "$entry"
+
+    if is_text_file "$file"; then
+      # Show ±20 lines around the match, with the matched line highlighted
+      local start=$((line - 20))
+      [[ $start -lt 1 ]] && start=1
+
+      bat --color=always --style=full \
+        --highlight-line "$line" \
+        --line-range "${start}:$((line + 20))" \
+        "$file" 2> /dev/null || echo "Preview not available"
+    elif [[ "$mode" == "rga" ]] && [[ -n "$query" ]]; then
+      # rga mode with binary files: try extracting text
+      rga --pretty --context 5 "$query" "$file" 2> /dev/null | head -100 \
+        || echo "Binary file - cannot preview"
+    else
+      echo "Binary file: ${file##*/}"
+    fi
+  fi
+}
+
+# ── Enter Handler ───────────────────────────────────────────────
+
+sx_enter() {
+  local entry="$1"
+  local mode
+  read -r mode < "$SX_STATE_DIR/mode" 2> /dev/null || mode="fd"
+
+  local state_dir="$SX_STATE_DIR"
+
+  if [[ "$mode" == "fd" ]]; then
+    rm -rf "$state_dir" 2> /dev/null
+    sx_open "$entry" ""
+  else
+    local file line
+    IFS=':' read -r file line _ <<< "$entry"
+    rm -rf "$state_dir" 2> /dev/null
+    sx_open "$file" "$line"
+  fi
+}
+# ── Header Builder ──────────────────────────────────────────────
+
+build_header() {
+  local mode hidden case_mode gitignore
+  read -r mode < "$SX_STATE_DIR/mode" 2> /dev/null || mode="fd"
+  read -r hidden < "$SX_STATE_DIR/hidden" 2> /dev/null || hidden="off"
+  read -r case_mode < "$SX_STATE_DIR/case" 2> /dev/null || case_mode="smart"
+  read -r gitignore < "$SX_STATE_DIR/gitignore" 2> /dev/null || gitignore="on"
+
+  local mode_label
+  case "$mode" in
+    fd) mode_label="[fd] Files" ;;
+    rg) mode_label="[rg] Content" ;;
+    rga) mode_label="[rga] Universal" ;;
+  esac
+
+  local gitignore_label="respected"
+  [[ "$gitignore" == "off" ]] && gitignore_label="ignored"
+
+  printf \
+    'CTRL-T: mode │ CTRL-H: hidden │ CTRL-I: case │ CTRL-G: gitignore │ CTRL-Y: copy │ CTRL-/: preview │  Mode: %s │ Hidden: %s │ Case: %s │ Gitignore: %s' \
+    "$mode_label" "$hidden" "$case_mode" "$gitignore_label"
+}
+
+# ── RG/RGA Wrappers (empty query guard) ──────────────────────────
+
+_sx_rg() {
+  local query="$1"
+  shift
+  if ((${#query} < ${SX_MIN_QUERY:-3})); then
+    echo "Type at least ${SX_MIN_QUERY:-3} characters to search..."
+    exit 0
+  fi
+  rg "$@" -- "$query" "$SEARCH_PATH"
+}
+
+_sx_rga() {
+  local query="$1"
+  shift
+  if ((${#query} < ${SX_MIN_QUERY:-3})); then
+    echo "Type at least ${SX_MIN_QUERY:-3} characters to search..."
+    exit 0
+  fi
+  rga "$@" -- "$query" "$SEARCH_PATH"
+}
+
+# ── Backend Command Builders ────────────────────────────────────
+
+build_fd_cmd() {
+  local hidden gitignore
+  read -r hidden < "$SX_STATE_DIR/hidden" 2> /dev/null || hidden="off"
+  read -r gitignore < "$SX_STATE_DIR/gitignore" 2> /dev/null || gitignore="on"
+
+  local cmd="fd --type f --color=always"
+
+  local excl
+  for excl in $SX_EXCLUDES; do
+    cmd+=" --exclude $excl"
+  done
+
+  [[ "$hidden" == "on" ]] && cmd+=" --hidden"
+  [[ "$gitignore" == "off" ]] && cmd+=" --no-ignore"
+
+  cmd+=" . $(printf '%q' "$SEARCH_PATH")"
+
+  echo "$cmd"
+}
+
+build_search_cmd() {
+  local searcher="$1"
+  local hidden case_mode gitignore
+  read -r hidden < "$SX_STATE_DIR/hidden" 2> /dev/null || hidden="off"
+  read -r case_mode < "$SX_STATE_DIR/case" 2> /dev/null || case_mode="smart"
+  read -r gitignore < "$SX_STATE_DIR/gitignore" 2> /dev/null || gitignore="on"
+
+  local cmd="${searcher} {q} --column --line-number --no-heading --color=always --max-count 100 --threads $SX_THREADS"
+
+  case "$case_mode" in
+    smart) cmd+=" --smart-case" ;;
+    sensitive) cmd+=" --case-sensitive" ;;
+    insensitive) cmd+=" --ignore-case" ;;
+  esac
+
+  [[ "$hidden" == "on" ]] && cmd+=" --hidden"
+  [[ "$gitignore" == "off" ]] && cmd+=" --no-ignore"
+
+  local excl
+  for excl in $SX_EXCLUDES; do
+    cmd+=" --glob '!$excl'"
+  done
+
+  cmd+=" || true"
+
+  echo "$cmd"
+}
+
+build_rg_cmd() { build_search_cmd "_sx_rg"; }
+build_rga_cmd() { build_search_cmd "_sx_rga"; }
+
+# ── Shared: Reload current mode (used by toggle transforms) ──────
+
+_sx_reload_current_mode() {
+  local mode header cmd
+  read -r mode < "$SX_STATE_DIR/mode" 2> /dev/null || mode="fd"
+
+  case "$mode" in
+    fd) cmd=$(build_fd_cmd) ;;
+    rg) cmd=$(build_rg_cmd) ;;
+    rga) cmd=$(build_rga_cmd) ;;
+  esac
+
+  header=$(build_header)
+  if [[ "$mode" == "fd" ]]; then
+    echo "change-header(${header})+reload(${cmd})"
+  else
+    echo "change-header(${header})+reload(sleep 0.1; ${cmd})"
+  fi
+}
+
+# ── Transform: Mode Toggle (CTRL-T) ────────────────────────────
+
+sx_transform_mode() {
+  local mode
+  read -r mode < "$SX_STATE_DIR/mode" 2> /dev/null || mode="fd"
+  local header
+  header=$(build_header)
+
+  if [[ "$mode" == "fd" ]]; then
+    echo "rg" > "$SX_STATE_DIR/mode"
+    local cmd
+    cmd=$(build_rg_cmd)
+    header=$(build_header)
+    echo "change-prompt([rg] ❯ )+disable-search+change-preview-window(down,60%,border-top)+change-header(${header})+reload(sleep 0.1; ${cmd})"
+  elif [[ "$mode" == "rg" ]]; then
+    if [[ "$HAS_RGA" -eq 1 ]]; then
+      echo "rga" > "$SX_STATE_DIR/mode"
+      local cmd
+      cmd=$(build_rga_cmd)
+      header=$(build_header)
+      echo "change-prompt([rga] ❯ )+change-header(${header})+reload(sleep 0.1; ${cmd})"
+    else
+      echo "fd" > "$SX_STATE_DIR/mode"
+      local cmd
+      cmd=$(build_fd_cmd)
+      header=$(build_header)
+      echo "change-prompt([fd] ❯ )+enable-search+change-preview-window(down,60%,border-top)+change-header(${header})+reload(${cmd})"
+    fi
+  else
+    echo "fd" > "$SX_STATE_DIR/mode"
+    local cmd
+    cmd=$(build_fd_cmd)
+    header=$(build_header)
+    echo "change-prompt([fd] ❯ )+enable-search+change-preview-window(down,60%,border-top)+change-header(${header})+reload(${cmd})"
+  fi
+}
+
+# ── Transform: Hidden Toggle (CTRL-H) ──────────────────────────
+
+sx_transform_hidden() {
+  local current
+  read -r current < "$SX_STATE_DIR/hidden" 2> /dev/null || current="off"
+  [[ "$current" == "off" ]] && echo "on" > "$SX_STATE_DIR/hidden" || echo "off" > "$SX_STATE_DIR/hidden"
+  _sx_reload_current_mode
+}
+
+# ── Transform: Case Toggle (CTRL-I) ────────────────────────────
+
+sx_transform_case() {
+  local current
+  read -r current < "$SX_STATE_DIR/case" 2> /dev/null || current="smart"
+  case "$current" in
+    smart) echo "sensitive" > "$SX_STATE_DIR/case" ;;
+    sensitive) echo "insensitive" > "$SX_STATE_DIR/case" ;;
+    insensitive) echo "smart" > "$SX_STATE_DIR/case" ;;
+  esac
+  _sx_reload_current_mode
+}
+
+# ── Transform: Gitignore Toggle (CTRL-G) ───────────────────────
+
+sx_transform_gitignore() {
+  local current
+  read -r current < "$SX_STATE_DIR/gitignore" 2> /dev/null || current="on"
+  [[ "$current" == "on" ]] && echo "off" > "$SX_STATE_DIR/gitignore" || echo "on" > "$SX_STATE_DIR/gitignore"
+  _sx_reload_current_mode
+}
+
+# ── Transform: Change (for rg/rga mode keystroke reload) ──────────────
+
+sx_transform_change() {
+  local mode
+  read -r mode < "$SX_STATE_DIR/mode" 2> /dev/null || mode="fd"
+
+  if [[ "$mode" == "rg" ]]; then
+    local cmd
+    cmd=$(build_rg_cmd)
+    echo "reload(sleep 0.1; ${cmd})"
+  elif [[ "$mode" == "rga" ]]; then
+    local cmd
+    cmd=$(build_rga_cmd)
+    echo "reload(sleep 0.1; ${cmd})"
+  fi
+}
+
+# ── Export Functions ─────────────────────────────────────────────
+
+export_fns() {
+  export SX_STATE_DIR SX_EXCLUDES SX_TEXT_EXTS SEARCH_PATH HAS_RGA SX_OPEN_CMD HAS_CLIPBOARD SX_THREADS SX_MIN_QUERY
+  export -f is_text_file sx_open sx_preview sx_enter sx_clip sx_force_open
+  export -f _sx_rg _sx_rga
+  export -f build_header build_fd_cmd build_search_cmd build_rg_cmd build_rga_cmd
+  export -f _sx_reload_current_mode sx_transform_mode sx_transform_hidden
+  export -f sx_transform_case sx_transform_gitignore sx_transform_change
+}
+
+# ── Main ─────────────────────────────────────────────────────────
+
+main() {
+  parse_args "$@"
+  check_deps
+
+  if [[ "$INITIAL_MODE" == "rga" && "$HAS_RGA" -eq 0 ]]; then
+    echo "Warning: rga not found, falling back to rg mode" >&2
+    INITIAL_MODE="rg"
+  fi
+
+  setup_state
+  export_fns
+
+  local initial_cmd
+  case "$INITIAL_MODE" in
+    fd) initial_cmd=$(build_fd_cmd) ;;
+    rg) initial_cmd=$(build_rg_cmd) ;;
+    rga) initial_cmd=$(build_rga_cmd) ;;
+  esac
+
+  local fzf_args=(
+    --ansi
+    --prompt "[${INITIAL_MODE}] ❯ "
+    --layout=reverse
+    --border=rounded
+    --info=inline
+    --delimiter :
+    --no-multi
+    --with-shell 'bash -c'
+    --header "$(build_header)"
+    --preview 'sx_preview {} {q}'
+    --bind "start:reload(${initial_cmd})"
+    --bind "ctrl-t:transform:sx_transform_mode"
+    --bind "ctrl-h:transform:sx_transform_hidden"
+    --bind "ctrl-i:transform:sx_transform_case"
+    --bind "ctrl-g:transform:sx_transform_gitignore"
+    --bind "change:transform:sx_transform_change"
+    --bind "enter:become(sx_enter {})"
+    --bind "alt-enter:execute-silent(sx_force_open {1q})"
+    --bind "ctrl-y:execute-silent(sx_clip {1q})+abort"
+    --bind 'ctrl-/:change-preview-window(down,60%,border-top|hidden|)'
+    --query "$INITIAL_QUERY"
+  )
+
+  if [[ "$INITIAL_MODE" != "fd" ]]; then
+    fzf_args+=(--disabled)
+  fi
+
+  fzf_args+=(--preview-window "down,60%,border-top")
+
+  fzf "${fzf_args[@]}"
+}
+
+main "$@"

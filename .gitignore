@@ -1,0 +1,5 @@
+shellcheck-stable/
+.DS_Store
+*.swp
+*.swo
+*~

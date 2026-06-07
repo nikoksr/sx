@@ -71,7 +71,6 @@ Key Bindings:
   Enter      Smart open (text → $EDITOR, other → system open)
   ALT-Enter  Force system open
   CTRL-Y     Copy file path to clipboard
-  CTRL-/     Toggle preview window
 EOF
 }
 
@@ -355,7 +354,7 @@ build_header() {
   [[ "$gitignore" == "off" ]] && gitignore_label="ignored"
 
   printf \
-    'CTRL-T: mode │ CTRL-H: hidden │ CTRL-G: gitignore │ CTRL-W: wrap │ CTRL-Y: copy │ CTRL-/: preview │  Mode: %s │ Hidden: %s │ Gitignore: %s' \
+    'CTRL-T: mode │ CTRL-H: hidden │ CTRL-G: gitignore │ CTRL-W: wrap │ CTRL-Y: copy │  Mode: %s │ Hidden: %s │ Gitignore: %s' \
     "$mode_label" "$hidden" "$gitignore_label"
 }
 
@@ -570,7 +569,6 @@ main() {
     --bind "enter:become(sx_enter {})"
     --bind "alt-enter:execute-silent(sx_force_open {1q})"
     --bind "ctrl-y:execute-silent(sx_clip {1q})+abort"
-    --bind 'ctrl-/:change-preview-window(down,60%,border-top,wrap|hidden|)'
     --bind 'ctrl-w:toggle-preview-wrap'
     --query "$INITIAL_QUERY"
   )

@@ -21,6 +21,8 @@ SX_THREADS=$(($(nproc 2> /dev/null || echo 4) - 1))
 
 SX_MIN_QUERY=3
 
+SX_VERSION="0.1.0"
+
 # Directories to always exclude from search
 SX_EXCLUDES="\
 .git .hg .svn \
@@ -53,6 +55,7 @@ Usage: sx [options] [path]
 Options:
   -q, --query QUERY    Start with initial search query
   -m, --mode MODE      Start in mode: file (default), rg, rga
+  -v, --version        Show version
   -h, --help           Show this help
 
 Modes (toggle with CTRL-T):
@@ -149,6 +152,10 @@ parse_args() {
             ;;
         esac
         shift 2
+        ;;
+      -v | --version)
+        echo "sx $SX_VERSION"
+        exit 0
         ;;
       -h | --help)
         show_help

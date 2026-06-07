@@ -14,7 +14,7 @@ sx wraps several CLI tools into a single interface:
 
 Results appear in an fzf window. Text files open in `$EDITOR`, everything else
 opens with the system handler (`xdg-open`, `open`, or `wslview`). Requires
-Bash 4+ and fzf >= 0.36.
+Bash 4+ and fzf >= 0.52.
 
 ## Installation
 
@@ -36,17 +36,15 @@ Install sx:
 
 Install dependencies:
 
-    sudo apt install fd-find ripgrep fzf bat shellcheck
+    sudo apt install fd-find ripgrep fzf bat
 
-On Debian, `fd` and `bat` install under different names. Create symlinks:
+Note: Debian's fzf package may be older than 0.52. Check with `fzf --version`.
+If needed, install a newer version from https://github.com/junegunn/fzf.
 
-    mkdir -p ~/.local/bin
-    ln -sf /usr/bin/fdfind ~/.local/bin/fd
-    ln -sf /usr/bin/batcat ~/.local/bin/bat
+Optional:
 
-Ensure `~/.local/bin` is in your `$PATH`.
-
-Optional: ripgrep-all is not packaged for Debian. Read install instructions [here](https://github.com/phiresky/ripgrep-all#debian-based).
+    # ripgrep-all is not packaged for Debian. See:
+    # https://github.com/phiresky/ripgrep-all#debian-based
 
 Install sx:
 

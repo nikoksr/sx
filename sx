@@ -21,7 +21,7 @@ SX_THREADS=$(($(nproc 2> /dev/null || echo 4) - 1))
 
 SX_MIN_QUERY=3
 
-SX_VERSION="0.2.1"
+SX_VERSION="0.3.0"
 
 # Directories to always exclude from search
 SX_EXCLUDES="\
@@ -76,11 +76,28 @@ EOF
 
 # ── Dependency Checking ──────────────────────────────────────────
 
+# Resolve a command from a list of candidate names (e.g., fd/fdfind on Debian).
+# Prints the first name found; returns 1 if none are found.
+resolve_cmd() {
+  local cmd
+  for cmd in "$@"; do
+    command -v "$cmd" > /dev/null 2>&1 && {
+      echo "$cmd"
+      return 0
+    }
+  done
+  return 1
+}
+
 check_deps() {
   local missing=()
-  for cmd in fd rg fzf bat; do
-    command -v "$cmd" > /dev/null 2>&1 || missing+=("$cmd")
-  done
+
+  SX_FD=$(resolve_cmd fd fdfind) || missing+=("fd (on Debian/Ubuntu: apt install fd-find)")
+  SX_BAT=$(resolve_cmd bat batcat) || missing+=("bat (on Debian/Ubuntu: apt install bat)")
+
+  command -v rg > /dev/null 2>&1 || missing+=("rg")
+  command -v fzf > /dev/null 2>&1 || missing+=("fzf")
+
   if [[ ${#missing[@]} -gt 0 ]]; then
     echo "Error: missing required commands: ${missing[*]}"
     echo "Please install them before running sx."
@@ -108,13 +125,13 @@ check_deps() {
     echo "Warning: no clipboard tool found (wl-copy/xclip/pbcopy). CTRL-Y will not work." >&2
   fi
 
-  # fzf version check (transform: requires >= 0.36)
+  # fzf version check (--with-shell: requires >= 0.52)
   local fzf_version
   read -r fzf_version _ <<< "$(fzf --version 2> /dev/null || echo "0.0")"
   local fzf_major fzf_minor
   IFS='.' read -r fzf_major fzf_minor _ <<< "$fzf_version"
-  if ((fzf_major == 0 && fzf_minor < 36)); then
-    echo "Error: sx requires fzf >= 0.36. You have $(fzf --version 2> /dev/null | head -1)." >&2
+  if ((fzf_major == 0 && fzf_minor < 52)); then
+    echo "Error: sx requires fzf >= 0.52. You have $(fzf --version 2> /dev/null | head -1)." >&2
     exit 1
   fi
 
@@ -290,7 +307,7 @@ sx_preview() {
 
   if [[ "$mode" == "fd" ]]; then
     # File mode: show the full file (up to 300 lines)
-    bat --color=always --style=full --line-range :300 "$entry" 2> /dev/null \
+    "$SX_BAT" --color=always --style=full --line-range :300 "$entry" 2> /dev/null \
       || echo "Preview not available"
   else
     # Content mode: show file content centered on the matched line
@@ -302,7 +319,7 @@ sx_preview() {
       local start=$((line - 20))
       [[ $start -lt 1 ]] && start=1
 
-      bat --color=always --style=full \
+      "$SX_BAT" --color=always --style=full \
         --highlight-line "$line" \
         --line-range "${start}:$((line + 20))" \
         "$file" 2> /dev/null || echo "Preview not available"
@@ -387,7 +404,7 @@ build_fd_cmd() {
   read -r hidden < "$SX_STATE_DIR/hidden" 2> /dev/null || hidden="off"
   read -r gitignore < "$SX_STATE_DIR/gitignore" 2> /dev/null || gitignore="on"
 
-  local cmd="fd --type f --color=always"
+  local cmd="$SX_FD --type f --color=always"
 
   local excl
   for excl in $SX_EXCLUDES; do
@@ -521,7 +538,7 @@ sx_transform_change() {
 # ── Export Functions ─────────────────────────────────────────────
 
 export_fns() {
-  export SX_STATE_DIR SX_EXCLUDES SX_TEXT_EXTS SEARCH_PATH HAS_RGA SX_OPEN_CMD HAS_CLIPBOARD SX_THREADS SX_MIN_QUERY
+  export SX_STATE_DIR SX_EXCLUDES SX_TEXT_EXTS SEARCH_PATH HAS_RGA SX_OPEN_CMD HAS_CLIPBOARD SX_THREADS SX_MIN_QUERY SX_FD SX_BAT
   export -f is_text_file sx_open sx_preview sx_enter sx_clip sx_force_open
   export -f _sx_rg _sx_rga
   export -f build_header build_fd_cmd build_search_cmd build_rg_cmd build_rga_cmd

@@ -21,7 +21,7 @@ SX_THREADS=$(($(nproc 2> /dev/null || echo 4) - 1))
 
 SX_MIN_QUERY=3
 
-SX_VERSION="0.1.0"
+SX_VERSION="0.2.0"
 
 # Directories to always exclude from search
 SX_EXCLUDES="\
@@ -66,8 +66,8 @@ Modes (toggle with CTRL-T):
 Key Bindings:
   CTRL-T     Cycle mode: fd → rg → rga → fd
   CTRL-H     Toggle hidden files
-  CTRL-I     Cycle case: smart → sensitive → insensitive
   CTRL-G     Toggle .gitignore respect
+  CTRL-W     Toggle preview line wrap
   Enter      Smart open (text → $EDITOR, other → system open)
   ALT-Enter  Force system open
   CTRL-Y     Copy file path to clipboard
@@ -190,7 +190,6 @@ setup_state() {
   trap 'rm -rf "$SX_STATE_DIR"' EXIT
 
   echo "off" > "$SX_STATE_DIR/hidden"
-  echo "smart" > "$SX_STATE_DIR/case"
   echo "on" > "$SX_STATE_DIR/gitignore"
   echo "$INITIAL_MODE" > "$SX_STATE_DIR/mode"
 
@@ -340,10 +339,9 @@ sx_enter() {
 # ── Header Builder ──────────────────────────────────────────────
 
 build_header() {
-  local mode hidden case_mode gitignore
+  local mode hidden gitignore
   read -r mode < "$SX_STATE_DIR/mode" 2> /dev/null || mode="fd"
   read -r hidden < "$SX_STATE_DIR/hidden" 2> /dev/null || hidden="off"
-  read -r case_mode < "$SX_STATE_DIR/case" 2> /dev/null || case_mode="smart"
   read -r gitignore < "$SX_STATE_DIR/gitignore" 2> /dev/null || gitignore="on"
 
   local mode_label
@@ -357,8 +355,8 @@ build_header() {
   [[ "$gitignore" == "off" ]] && gitignore_label="ignored"
 
   printf \
-    'CTRL-T: mode │ CTRL-H: hidden │ CTRL-I: case │ CTRL-G: gitignore │ CTRL-Y: copy │ CTRL-/: preview │  Mode: %s │ Hidden: %s │ Case: %s │ Gitignore: %s' \
-    "$mode_label" "$hidden" "$case_mode" "$gitignore_label"
+    'CTRL-T: mode │ CTRL-H: hidden │ CTRL-G: gitignore │ CTRL-W: wrap │ CTRL-Y: copy │ CTRL-/: preview │  Mode: %s │ Hidden: %s │ Gitignore: %s' \
+    "$mode_label" "$hidden" "$gitignore_label"
 }
 
 # ── RG/RGA Wrappers (empty query guard) ──────────────────────────
@@ -407,18 +405,11 @@ build_fd_cmd() {
 
 build_search_cmd() {
   local searcher="$1"
-  local hidden case_mode gitignore
+  local hidden gitignore
   read -r hidden < "$SX_STATE_DIR/hidden" 2> /dev/null || hidden="off"
-  read -r case_mode < "$SX_STATE_DIR/case" 2> /dev/null || case_mode="smart"
   read -r gitignore < "$SX_STATE_DIR/gitignore" 2> /dev/null || gitignore="on"
 
-  local cmd="${searcher} {q} --column --line-number --no-heading --color=always --max-count 100 --threads $SX_THREADS"
-
-  case "$case_mode" in
-    smart) cmd+=" --smart-case" ;;
-    sensitive) cmd+=" --case-sensitive" ;;
-    insensitive) cmd+=" --ignore-case" ;;
-  esac
+  local cmd="${searcher} {q} --column --line-number --no-heading --color=always --smart-case --max-count 100 --threads $SX_THREADS"
 
   [[ "$hidden" == "on" ]] && cmd+=" --hidden"
   [[ "$gitignore" == "off" ]] && cmd+=" --no-ignore"
@@ -469,7 +460,7 @@ sx_transform_mode() {
     local cmd
     cmd=$(build_rg_cmd)
     header=$(build_header)
-    echo "change-prompt([rg] ❯ )+disable-search+change-preview-window(down,60%,border-top)+change-header(${header})+reload(sleep 0.1; ${cmd})"
+    echo "change-prompt([rg] ❯ )+disable-search+change-preview-window(down,60%,border-top,wrap)+change-header(${header})+reload(sleep 0.1; ${cmd})"
   elif [[ "$mode" == "rg" ]]; then
     if [[ "$HAS_RGA" -eq 1 ]]; then
       echo "rga" > "$SX_STATE_DIR/mode"
@@ -482,14 +473,14 @@ sx_transform_mode() {
       local cmd
       cmd=$(build_fd_cmd)
       header=$(build_header)
-      echo "change-prompt([fd] ❯ )+enable-search+change-preview-window(down,60%,border-top)+change-header(${header})+reload(${cmd})"
+      echo "change-prompt([fd] ❯ )+enable-search+change-preview-window(down,60%,border-top,wrap)+change-header(${header})+reload(${cmd})"
     fi
   else
     echo "fd" > "$SX_STATE_DIR/mode"
     local cmd
     cmd=$(build_fd_cmd)
     header=$(build_header)
-    echo "change-prompt([fd] ❯ )+enable-search+change-preview-window(down,60%,border-top)+change-header(${header})+reload(${cmd})"
+    echo "change-prompt([fd] ❯ )+enable-search+change-preview-window(down,60%,border-top,wrap)+change-header(${header})+reload(${cmd})"
   fi
 }
 
@@ -499,19 +490,6 @@ sx_transform_hidden() {
   local current
   read -r current < "$SX_STATE_DIR/hidden" 2> /dev/null || current="off"
   [[ "$current" == "off" ]] && echo "on" > "$SX_STATE_DIR/hidden" || echo "off" > "$SX_STATE_DIR/hidden"
-  _sx_reload_current_mode
-}
-
-# ── Transform: Case Toggle (CTRL-I) ────────────────────────────
-
-sx_transform_case() {
-  local current
-  read -r current < "$SX_STATE_DIR/case" 2> /dev/null || current="smart"
-  case "$current" in
-    smart) echo "sensitive" > "$SX_STATE_DIR/case" ;;
-    sensitive) echo "insensitive" > "$SX_STATE_DIR/case" ;;
-    insensitive) echo "smart" > "$SX_STATE_DIR/case" ;;
-  esac
   _sx_reload_current_mode
 }
 
@@ -549,7 +527,7 @@ export_fns() {
   export -f _sx_rg _sx_rga
   export -f build_header build_fd_cmd build_search_cmd build_rg_cmd build_rga_cmd
   export -f _sx_reload_current_mode sx_transform_mode sx_transform_hidden
-  export -f sx_transform_case sx_transform_gitignore sx_transform_change
+  export -f sx_transform_gitignore sx_transform_change
 }
 
 # ── Main ─────────────────────────────────────────────────────────
@@ -587,13 +565,13 @@ main() {
     --bind "start:reload(${initial_cmd})"
     --bind "ctrl-t:transform:sx_transform_mode"
     --bind "ctrl-h:transform:sx_transform_hidden"
-    --bind "ctrl-i:transform:sx_transform_case"
     --bind "ctrl-g:transform:sx_transform_gitignore"
     --bind "change:transform:sx_transform_change"
     --bind "enter:become(sx_enter {})"
     --bind "alt-enter:execute-silent(sx_force_open {1q})"
     --bind "ctrl-y:execute-silent(sx_clip {1q})+abort"
-    --bind 'ctrl-/:change-preview-window(down,60%,border-top|hidden|)'
+    --bind 'ctrl-/:change-preview-window(down,60%,border-top,wrap|hidden|)'
+    --bind 'ctrl-w:toggle-preview-wrap'
     --query "$INITIAL_QUERY"
   )
 
@@ -601,7 +579,7 @@ main() {
     fzf_args+=(--disabled)
   fi
 
-  fzf_args+=(--preview-window "down,60%,border-top")
+  fzf_args+=(--preview-window "down,60%,border-top,wrap")
 
   fzf "${fzf_args[@]}"
 }

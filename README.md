@@ -18,9 +18,24 @@ Bash 4+ and fzf >= 0.52.
 
 ## Installation
 
-### Arch Linux
+### Quick Install
 
-Install dependencies:
+    curl -fsSL https://raw.githubusercontent.com/nikoksr/sx/main/install.sh | bash
+
+### From Source
+
+    git clone https://github.com/nikoksr/sx.git
+    cd sx
+    ./install.sh
+
+### Dependencies
+
+sx requires [fd](https://github.com/sharkdp/fd), [ripgrep](https://github.com/BurntSushi/ripgrep), [fzf](https://github.com/junegunn/fzf) >= 0.52, and [bat](https://github.com/sharkdp/bat).
+Optional: [ripgrep-all](https://github.com/phiresky/ripgrep-all) for searching PDFs, documents, and archives.
+
+Run `sx --version` to verify the installation.
+
+**Arch Linux:**
 
     sudo pacman -S fd ripgrep fzf bat
 
@@ -28,13 +43,7 @@ Optional:
 
     paru -S ripgrep-all   # or your preferred AUR helper
 
-Install sx:
-
-    sudo cp sx /usr/local/bin/
-
-### Debian / Ubuntu
-
-Install dependencies:
+**Debian / Ubuntu:**
 
     sudo apt install fd-find ripgrep fzf bat
 
@@ -46,9 +55,13 @@ Optional:
     # ripgrep-all is not packaged for Debian. See:
     # https://github.com/phiresky/ripgrep-all#debian-based
 
-Install sx:
+**macOS:**
 
-    sudo cp sx /usr/local/bin/
+    brew install fd ripgrep fzf bat
+
+Optional:
+
+    brew install ripgrep-all
 
 ## Development
 

@@ -1,6 +1,6 @@
-SRC   := sx
+SRC   := sx install.sh
 
-.PHONY: help fmt fmt-check lint check
+.PHONY: fmt fmt-check lint check
 
 fmt:
 	shfmt -w $(SRC)

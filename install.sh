@@ -26,7 +26,7 @@ while [[ $# -gt 0 ]]; do
       echo "Install sx - Universal Search Tool"
       echo ""
       echo "Options:"
-      echo "  --dir DIR  Install to DIR (default: ~/.local/bin)"
+      echo "  --dir DIR  Install to DIR (default: /usr/local/bin)"
       exit 0
       ;;
     *)
@@ -38,26 +38,48 @@ done
 
 # ── Install ──────────────────────────────────────────────────────
 
-# Default install directory: XDG_BIN_HOME > ~/.local/bin
-[[ -z "$INSTALL_DIR" ]] && INSTALL_DIR="${XDG_BIN_HOME:-$HOME/.local/bin}"
+# Default install directory
+[[ -z "$INSTALL_DIR" ]] && INSTALL_DIR="/usr/local/bin"
 
-mkdir -p "$INSTALL_DIR"
-TARGET="$INSTALL_DIR/$SOURCE_FILE"
+TMPFILE="$(mktemp)"
+trap 'rm -f "$TMPFILE"' EXIT
 
 # Detect source: local (cloned repo) vs remote (curl | bash)
 script_dir="$(cd "$(dirname "$0")" && pwd)"
-if [[ -f "$script_dir/$SOURCE_FILE" ]] && [[ -f "$script_dir/install.sh" ]]; then
+if [[ -t 0 ]] && [[ -f "$script_dir/$SOURCE_FILE" ]] && [[ -f "$script_dir/install.sh" ]]; then
   echo "Installing from local copy..."
-  cp "$script_dir/$SOURCE_FILE" "$TARGET"
+  cp "$script_dir/$SOURCE_FILE" "$TMPFILE"
 else
   echo "Downloading $SOURCE_FILE..."
-  curl -fsSL "https://raw.githubusercontent.com/$SOURCE_REPO/$SOURCE_BRANCH/$SOURCE_FILE" -o "$TARGET"
+  curl -fsSL "https://raw.githubusercontent.com/$SOURCE_REPO/$SOURCE_BRANCH/$SOURCE_FILE" -o "$TMPFILE"
 fi
 
-chmod +x "$TARGET"
+# ── Helpers ────────────────────────────────────────────────────────
+
+elevate() {
+  if [[ "${EUID:-}" == "0" ]]; then
+    "$@"
+  elif command -v sudo > /dev/null 2>&1; then
+    sudo "$@"
+  elif command -v doas > /dev/null 2>&1; then
+    doas "$@"
+  else
+    echo "Error: need root privileges to write to $INSTALL_DIR" >&2
+    echo "Re-run with sudo, or use --dir ~/.local/bin for a user-local install" >&2
+    exit 1
+  fi
+}
+
+# Create install directory if needed
+if [[ ! -d "$INSTALL_DIR" ]]; then
+  elevate mkdir -p "$INSTALL_DIR"
+fi
+
+# Install binary
+elevate install -m 755 "$TMPFILE" "$INSTALL_DIR/$SOURCE_FILE"
 
 echo ""
-echo "✓ Installed $SOURCE_FILE to $TARGET"
+echo "✓ Installed $SOURCE_FILE to $INSTALL_DIR/$SOURCE_FILE"
 
 # PATH check
 if [[ ":$PATH:" != *":$INSTALL_DIR:"* ]]; then

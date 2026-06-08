@@ -32,7 +32,7 @@ __pycache__ .venv venv env .tox .mypy_cache .pytest_cache .eggs .conda .pixi \
 .zvm .pyenv .nvm .sdkman .rbenv .cargo .rustup .luarocks \
 .npm .yarn .cache .gradle .maven .ivy2 .nuget .pub-cache .dart_tool .fvm \
 .idea .vscode .vs .fleet \
-.DS_Store"
+"
 
 SX_TEXT_EXTS="py pyw rs go js ts jsx tsx java c h cpp hpp cs rb php pl pm swift kt kts \
 scala clj cljs hs ml mli ex exs erl dart lua r tcl m \
@@ -228,8 +228,8 @@ is_text_file() {
   fi
 
   case "$base" in
-    makefile | dockerfile | gemfile | rakefile | vagrantfile | jenkinsfile | brewfile | \
-      license | readme | authors | changelog | copying | install | news | todo | \
+    vagrantfile | jenkinsfile | brewfile | \
+      authors | changelog | copying | install | news | todo | \
       .gitignore | .gitattributes | .editorconfig | .envrc | .bashrc | .zshrc | .profile | .bash_profile)
       return 0
       ;;
@@ -315,7 +315,7 @@ sx_preview() {
     IFS=':' read -r file line _ <<< "$entry"
 
     if is_text_file "$file"; then
-      # Show ±20 lines around the match, with the matched line highlighted
+      # Show around 20 lines around the match, with the matched line highlighted
       local start=$((line - 20))
       [[ $start -lt 1 ]] && start=1
 
@@ -381,7 +381,6 @@ _sx_rg() {
   local query="$1"
   shift
   if ((${#query} < ${SX_MIN_QUERY:-3})); then
-    echo "Type at least ${SX_MIN_QUERY:-3} characters to search..."
     exit 0
   fi
   rg "$@" -- "$query" "$SEARCH_PATH"
@@ -391,7 +390,6 @@ _sx_rga() {
   local query="$1"
   shift
   if ((${#query} < ${SX_MIN_QUERY:-3})); then
-    echo "Type at least ${SX_MIN_QUERY:-3} characters to search..."
     exit 0
   fi
   rga "$@" -- "$query" "$SEARCH_PATH"
@@ -466,11 +464,8 @@ _sx_reload_current_mode() {
 # ── Transform: Mode Toggle (CTRL-T) ────────────────────────────
 
 sx_transform_mode() {
-  local mode
+  local mode header
   read -r mode < "$SX_STATE_DIR/mode" 2> /dev/null || mode="fd"
-  local header
-  header=$(build_header)
-
   if [[ "$mode" == "fd" ]]; then
     echo "rg" > "$SX_STATE_DIR/mode"
     local cmd

@@ -579,8 +579,8 @@ main() {
     --bind "ctrl-g:transform:sx_transform_gitignore"
     --bind "change:transform:sx_transform_change"
     --bind "enter:become(sx_enter {})"
-    --bind "alt-enter:execute-silent(sx_force_open {1q})"
-    --bind "ctrl-y:execute-silent(sx_clip {1q})+abort"
+    --bind "alt-enter:execute-silent(sx_force_open {1})"
+    --bind "ctrl-y:execute-silent(sx_clip {1})"
     --bind 'ctrl-w:toggle-preview-wrap'
     --query "$INITIAL_QUERY"
   )

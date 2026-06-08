@@ -21,7 +21,7 @@ SX_THREADS=$(($(nproc 2> /dev/null || echo 4) - 1))
 
 SX_MIN_QUERY=3
 
-SX_VERSION="0.3.0"
+SX_VERSION="0.3.1"
 
 # Directories to always exclude from search
 SX_EXCLUDES="\

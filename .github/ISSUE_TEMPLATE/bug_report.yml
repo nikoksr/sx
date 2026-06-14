@@ -1,0 +1,57 @@
+name: Bug report
+description: Report a bug or unexpected behavior in sx.
+title: "[Bug]: "
+labels: ["bug"]
+body:
+  - type: markdown
+    attributes:
+      value: |
+        Thanks for taking the time to report a bug!
+
+        Before continuing, please **search the existing issues** to avoid duplicates.
+
+  - type: checkboxes
+    id: search
+    attributes:
+      label: Is there an existing issue for this?
+      description: Please search the issue tracker before submitting.
+      options:
+        - label: I have searched the existing issues
+          required: true
+
+  - type: textarea
+    id: what-happened
+    attributes:
+      label: What happened?
+      description: What did you do, what did you expect, and what actually happened?
+      placeholder: |
+        Steps to reproduce:
+        1. Ran `sx ...`
+        2. Pressed ...
+        3. Expected ... but got ...
+    validations:
+      required: true
+
+  - type: textarea
+    id: doctor
+    attributes:
+      label: Output of `sx doctor`
+      description: |
+        Run `sx doctor` in your terminal and paste the **full output** below.
+        It captures your OS, shell, terminal, and all dependency versions, so we can
+        diagnose quickly. (It's copy-paste friendly — no colors when piped.)
+      placeholder: |
+        $ sx doctor
+        sx 0.4.0 — diagnosis report
+        ...
+      render: shell
+    validations:
+      required: true
+
+  - type: textarea
+    id: extra
+    attributes:
+      label: Anything else?
+      description: Screenshots, logs, or anything else that might help. You can attach files by dragging them in.
+    validations:
+      required: false

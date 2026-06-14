@@ -21,7 +21,7 @@ SX_THREADS=$(($(nproc 2> /dev/null || echo 4) - 1))
 
 SX_MIN_QUERY=3
 
-SX_VERSION="0.3.2"
+SX_VERSION="0.4.0"
 
 # Directories to always exclude from search
 SX_EXCLUDES="\
@@ -51,12 +51,14 @@ show_help() {
 sx - Universal Search Tool
 
 Usage: sx [options] [path]
+       sx doctor
 
 Options:
   -q, --query QUERY    Start with initial search query
   -m, --mode MODE      Start in mode: file (default), rg, rga
   -v, --version        Show version
   -h, --help           Show this help
+  doctor               Run diagnostic health check
 
 Modes (toggle with CTRL-T):
   [fd]  File search    — fuzzy filter over fd results
@@ -541,9 +543,249 @@ export_fns() {
   export -f sx_transform_gitignore sx_transform_change
 }
 
+# ── Doctor (Diagnostic Health Check) ─────────────────────────────
+
+_doctor_extract_version() {
+  local cmd="$1"
+  local line
+  line=$("$cmd" --version 2> /dev/null | head -1) || return 1
+  [[ -z "$line" ]] && return 1
+  if [[ $line =~ [0-9]+\.[0-9]+\.[0-9]+[^[:space:]]* ]]; then
+    printf '%s\n' "${BASH_REMATCH[0]}"
+    return 0
+  fi
+  return 1
+}
+
+_doctor_status() {
+  local type="$1" label="$2" value="${3:-}" hint="${4:-}"
+  local symbol="" color=""
+  case "$type" in
+    ok)
+      symbol="✓"
+      color="${_SX_DOK:-}"
+      ;;
+    fail)
+      symbol="✗"
+      color="${_SX_DERR:-}"
+      ;;
+    warn)
+      symbol="⚠"
+      color="${_SX_DWARN:-}"
+      ;;
+  esac
+  if [[ -n "$value" && -n "$hint" ]]; then
+    printf '  %s%s%s %-12s %-10s %s\n' \
+      "$color" "$symbol" "${_SX_DRESET:-}" "$label" "$value" "$hint"
+  elif [[ -n "$value" ]]; then
+    printf '  %s%s%s %-12s %s\n' \
+      "$color" "$symbol" "${_SX_DRESET:-}" "$label" "$value"
+  elif [[ -n "$hint" ]]; then
+    printf '  %s%s%s %s %s\n' \
+      "$color" "$symbol" "${_SX_DRESET:-}" "$label" "$hint"
+  else
+    printf '  %s%s%s %s\n' \
+      "$color" "$symbol" "${_SX_DRESET:-}" "$label"
+  fi
+}
+
+_doctor_section() {
+  printf '\n%s\n' "$1"
+}
+
+sx_doctor() {
+  local errors=0 warnings=0
+  local fzf_ver=""
+  local resolved version pretty_name line bash_ver terminal ssh_status
+  local kernel_name kernel arch fzf_major fzf_minor
+  local clip_cmd open_cmd nproc_cmd file_cmd err_word warn_word tput_colors
+
+  # Colors (only when stdout is a terminal)
+  if [[ -t 1 ]]; then
+    _SX_DOK=$'\e[32m'
+    _SX_DERR=$'\e[31m'
+    _SX_DWARN=$'\e[33m'
+    _SX_DRESET=$'\e[0m'
+  else
+    _SX_DOK=""
+    _SX_DERR=""
+    _SX_DWARN=""
+    _SX_DRESET=""
+  fi
+
+  printf 'sx %s — diagnosis report\n' "$SX_VERSION"
+
+  # ── Platform ──
+
+  _doctor_section "Platform"
+
+  pretty_name=""
+  if [[ -f /etc/os-release ]]; then
+    line=$(grep -m1 '^PRETTY_NAME=' /etc/os-release 2> /dev/null) || true
+    if [[ -n "$line" ]]; then
+      pretty_name="${line#PRETTY_NAME=}"
+      pretty_name="${pretty_name//\"/}"
+    fi
+  fi
+  [[ -z "$pretty_name" ]] && pretty_name=$(uname -s 2> /dev/null || echo "unknown")
+
+  kernel_name=$(uname -s 2> /dev/null | tr '[:upper:]' '[:lower:]' || echo "unknown")
+  kernel=$(uname -r 2> /dev/null || echo "unknown")
+  arch=$(uname -m 2> /dev/null || echo "unknown")
+
+  printf '  %-13s%s (%s %s)  [%s]\n' "OS:" "$pretty_name" "$kernel_name" "$kernel" "$arch"
+
+  bash_ver="${BASH_VERSION%% *}"
+  printf '  %-13s%s\n' "Bash:" "$bash_ver"
+
+  terminal="${TERM:-unknown}"
+  [[ -n "${TERM_PROGRAM:-}" ]] && terminal="$terminal ($TERM_PROGRAM)"
+  printf '  %-13s%s\n' "Terminal:" "$terminal"
+
+  if [[ -n "${SSH_CONNECTION:-}" || -n "${SSH_TTY:-}" ]]; then
+    ssh_status="yes"
+  else
+    ssh_status="no"
+  fi
+  printf '  %-13s%s\n' "SSH:" "$ssh_status"
+
+  tput_colors=$(tput colors 2> /dev/null) || true
+  [[ -n "$tput_colors" ]] && printf '  %-13s%s\n' "Colors:" "$tput_colors"
+
+  # ── Dependencies ──
+
+  _doctor_section "Dependencies"
+
+  resolved=$(resolve_cmd fd fdfind 2> /dev/null) || true
+  if [[ -n "$resolved" ]]; then
+    version=$(_doctor_extract_version "$resolved") || version=""
+    _doctor_status ok "fd" "$version" "($resolved)"
+  else
+    _doctor_status fail "fd" "not found" "← required"
+    errors=$((errors + 1))
+  fi
+
+  resolved=$(resolve_cmd bat batcat 2> /dev/null) || true
+  if [[ -n "$resolved" ]]; then
+    version=$(_doctor_extract_version "$resolved") || version=""
+    _doctor_status ok "bat" "$version" "($resolved)"
+  else
+    _doctor_status fail "bat" "not found" "← required"
+    errors=$((errors + 1))
+  fi
+
+  if command -v rg > /dev/null 2>&1; then
+    version=$(_doctor_extract_version rg) || version=""
+    _doctor_status ok "rg" "$version"
+  else
+    _doctor_status fail "rg" "not found" "← required"
+    errors=$((errors + 1))
+  fi
+
+  if command -v fzf > /dev/null 2>&1; then
+    fzf_ver=$(_doctor_extract_version fzf) || fzf_ver=""
+    _doctor_status ok "fzf" "$fzf_ver"
+  else
+    _doctor_status fail "fzf" "not found" "← required"
+    errors=$((errors + 1))
+  fi
+
+  # ── Optional ──
+
+  _doctor_section "Optional"
+
+  if command -v rga > /dev/null 2>&1; then
+    version=$(_doctor_extract_version rga) || version=""
+    _doctor_status ok "rga" "$version"
+  else
+    _doctor_status fail "rga" "not found" "← rga mode unavailable"
+  fi
+
+  clip_cmd=$(resolve_cmd wl-copy xclip pbcopy 2> /dev/null) || true
+  if [[ -n "$clip_cmd" ]]; then
+    _doctor_status ok "clipboard" "$clip_cmd"
+  else
+    _doctor_status fail "clipboard" "not found" "← Ctrl-Y will not work"
+    warnings=$((warnings + 1))
+  fi
+
+  open_cmd=$(resolve_cmd xdg-open open wslview 2> /dev/null) || true
+  if [[ -n "$open_cmd" ]]; then
+    _doctor_status ok "open" "$open_cmd"
+  else
+    _doctor_status fail "open" "not found" "← opening non-text files will not work"
+    warnings=$((warnings + 1))
+  fi
+
+  if [[ -n "${EDITOR:-}" ]]; then
+    _doctor_status ok "editor" "${EDITOR##*/}" '(from $EDITOR)'
+  else
+    _doctor_status warn "editor" "not set" "← will default to vim"
+  fi
+
+  # ── Diagnostics ──
+
+  _doctor_section "Diagnostics"
+
+  if [[ -n "$fzf_ver" ]]; then
+    IFS='.' read -r fzf_major fzf_minor _ <<< "$fzf_ver"
+    if [[ "$fzf_major" =~ ^[0-9]+$ ]] && ((fzf_major == 0 && fzf_minor < 52)); then
+      _doctor_status fail "fzf >= 0.52" "$fzf_ver" "← sx requires fzf >= 0.52"
+      errors=$((errors + 1))
+    else
+      _doctor_status ok "fzf >= 0.52" "" "required version"
+    fi
+
+    if [[ "$fzf_ver" == "0.66.0" ]]; then
+      _doctor_status warn "Ctrl+H binding" "" \
+        "likely broken — fzf 0.66.0 has a known bug (junegunn/fzf#4556)"
+      warnings=$((warnings + 1))
+    fi
+  else
+    _doctor_status fail "fzf >= 0.52" "" "← fzf not installed"
+    errors=$((errors + 1))
+  fi
+
+  nproc_cmd=$(command -v nproc 2> /dev/null) || true
+  if [[ -n "$nproc_cmd" ]]; then
+    _doctor_status ok "nproc" "" "available"
+  else
+    _doctor_status warn "nproc" "" "← thread count will default to 4"
+    warnings=$((warnings + 1))
+  fi
+
+  file_cmd=$(command -v file 2> /dev/null) || true
+  if [[ -n "$file_cmd" ]]; then
+    _doctor_status ok "file" "" "available"
+  else
+    _doctor_status warn "file" "" "← MIME type detection will be limited"
+    warnings=$((warnings + 1))
+  fi
+
+  # ── Summary ──
+
+  if [[ $errors -eq 0 && $warnings -eq 0 ]]; then
+    printf '\nAll checks passed.\n'
+  else
+    err_word="errors"
+    warn_word="warnings"
+    [[ $errors -eq 1 ]] && err_word="error"
+    [[ $warnings -eq 1 ]] && warn_word="warning"
+    printf '\n%d %s, %d %s found.\n' "$errors" "$err_word" "$warnings" "$warn_word"
+  fi
+
+  [[ $errors -gt 0 ]] && return 1
+  return 0
+}
+
 # ── Main ─────────────────────────────────────────────────────────
 
 main() {
+  if [[ "${1:-}" == "doctor" ]]; then
+    sx_doctor
+    exit $?
+  fi
+
   parse_args "$@"
   check_deps
 
